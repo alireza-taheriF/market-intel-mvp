@@ -203,9 +203,15 @@ def tab_product(r: AnalysisResult) -> None:
 def company_table(companies, role: str) -> pd.DataFrame:
     rows = []
     for c in companies:
-        row = {"Company": c.name, "Country": c.country or "UNKNOWN", "Website": c.website,
+        country = c.country or "UNKNOWN"
+        if c.country and "country" in c.unverified_fields:
+            country += " ⚠️ (general knowledge, not in sources)"
+        row = {"Company": c.name, "Country": country, "Website": c.website,
                "Activity": c.activity or "UNKNOWN", "Record status": VERIF_ICON[c.status.value],
                "Website reachable": {True: "yes", False: "no", None: "—"}[c.website_reachable],
+               "Website from": {"source": "cited source", "search": "search (name↔domain match)",
+                                "knowledge (domain matches name)": "model knowledge (name↔domain match)"}.get(
+                   c.website_origin or "", "—"),
                "Missing data": ", ".join(c.missing_fields) or "—"}
         if role == "customer":
             row["Industry"] = c.industry or "UNKNOWN"

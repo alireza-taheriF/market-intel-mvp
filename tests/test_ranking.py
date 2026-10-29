@@ -154,3 +154,31 @@ def test_geo_fit_rules():
     assert geo_fit("United Arab Emirates", "GCC", [])[0] == 1.0      # inside target region
     assert geo_fit("Qatar", "", markets)[0] == 0.5                   # same wider region
     assert geo_fit("Brazil", "GCC", markets)[0] == 0.0
+
+
+def test_generic_words_do_not_create_an_industry_match():
+    product = ProductProfile(name="BESS", industries=[Claim("EV charging infrastructure"), Claim("Utilities")])
+    assert industry_fit("Infrastructure developer", None, product)[0] == 0.0
+    assert industry_fit("Utilities", None, product)[0] == 1.0
+
+
+def test_evidence_not_about_a_product_need_earns_nothing():
+    product = ProductProfile(name="Battery energy storage system", keywords=["battery energy storage"],
+                             applications=[Claim("Peak shaving")])
+    listed = Company(name="X", role="customer", evidence=[
+        Claim("X is listed among manufacturing startups in Saudi Arabia", status=Verification.VERIFIED)])
+    project = Company(name="Y", role="customer", evidence=[
+        Claim("Y awarded a 500 MW battery storage project", status=Verification.VERIFIED)])
+    assert need_evidence(listed, product)[0] == 0.0
+    assert need_evidence(project, product)[0] == 0.5
+
+
+def test_expansion_in_a_target_industry_counts_as_need_without_naming_the_product():
+    product = ProductProfile(name="Rotary screw air compressor", keywords=["air compressor"],
+                             industries=[Claim("Food and beverage"), Claim("Automotive")])
+    dairy = Company(name="Vinamilk", role="customer", evidence=[
+        Claim("Vinamilk is building a new food and beverage plant in Binh Duong", status=Verification.VERIFIED)])
+    listed = Company(name="Z", role="customer", evidence=[
+        Claim("Z is a food and beverage company in Vietnam", status=Verification.VERIFIED)])  # no trigger
+    assert need_evidence(dairy, product)[0] == 0.5
+    assert need_evidence(listed, product)[0] == 0.0

@@ -45,7 +45,8 @@ class SearchClient:
             return "tavily" if self.settings.tavily_api_key else "duckduckgo"
         return p
 
-    def search(self, query: str, max_results: int | None = None) -> list[SearchHit]:
+    def search(self, query: str, max_results: int | None = None,
+               exclude_domains: list[str] | None = None) -> list[SearchHit]:
         n = max_results or self.settings.results_per_query
         if self.faults.network_down:
             raise NetworkError("Simulated: no internet connection", service="Web search")
@@ -55,7 +56,7 @@ class SearchClient:
                 service="Web search",
             )
         if self.provider == "tavily":
-            hits = self._tavily(query, n)
+            hits = self._tavily(query, n, exclude_domains)
         else:
             hits = self._duckduckgo(query, n)
         return [h for h in hits if h.url.startswith(("http://", "https://"))]
@@ -87,11 +88,14 @@ class SearchClient:
 
     # --- providers -----------------------------------------------------------------
 
-    def _tavily(self, query: str, n: int) -> list[SearchHit]:
+    def _tavily(self, query: str, n: int, exclude_domains: list[str] | None = None) -> list[SearchHit]:
+        payload = {"api_key": self.settings.tavily_api_key, "query": query, "max_results": n}
+        if exclude_domains:
+            payload["exclude_domains"] = exclude_domains
         try:
             resp = requests.post(
                 "https://api.tavily.com/search",
-                json={"api_key": self.settings.tavily_api_key, "query": query, "max_results": n},
+                json=payload,
                 timeout=self.settings.http_timeout_s,
             )
             resp.raise_for_status()

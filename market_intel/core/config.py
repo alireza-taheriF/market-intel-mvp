@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
@@ -39,7 +40,7 @@ class Settings:
     http_timeout_s: float = field(default_factory=lambda: float(_env("HTTP_TIMEOUT_S", "12")))
     results_per_query: int = field(default_factory=lambda: int(_env("RESULTS_PER_QUERY", "6")))
     search_delay_s: float = field(default_factory=lambda: float(_env("SEARCH_DELAY_S", "1.5")))
-    max_pages_per_step: int = field(default_factory=lambda: int(_env("MAX_PAGES_PER_STEP", "12")))
+    max_pages_per_step: int = field(default_factory=lambda: int(_env("MAX_PAGES_PER_STEP", "20")))
     page_text_chars: int = 12000
 
     # SMTP
@@ -48,7 +49,10 @@ class Settings:
     smtp_user: str = field(default_factory=lambda: _env("SMTP_USER"))
     smtp_password: str = field(default_factory=lambda: _env("SMTP_PASSWORD"))
     smtp_from: str = field(default_factory=lambda: _env("SMTP_FROM"))
-    smtp_security: str = field(default_factory=lambda: _env("SMTP_SECURITY", "starttls"))  # starttls|ssl|none
+    # First word only, so a stray inline comment ("starttls# ...") can't silently disable TLS.
+    smtp_security: str = field(
+        default_factory=lambda: (re.split(r"[\s#]", _env("SMTP_SECURITY", "starttls"))[0] or "starttls").lower()
+    )  # starttls|ssl|none
     smtp_timeout_s: float = field(default_factory=lambda: float(_env("SMTP_TIMEOUT_S", "20")))
 
     runs_dir: str = field(default_factory=lambda: _env("RUNS_DIR", "runs"))

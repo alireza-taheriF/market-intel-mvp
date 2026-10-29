@@ -30,6 +30,13 @@ REGIONS["mena"] = REGIONS["middle east"] | {"morocco", "algeria", "tunisia", "li
 REGIONS["southeast asia"] = {"vietnam", "thailand", "indonesia", "malaysia", "philippines", "singapore"}
 REGIONS["eu"] = REGIONS["europe"] - {"united kingdom", "uk", "norway", "switzerland", "turkey", "türkiye"}
 
+# Words too generic to show an industry match ("infrastructure developer" is not "EV charging infrastructure").
+_GENERIC_INDUSTRY_TOKENS = {
+    "infrastructure", "developer", "development", "service", "services", "solution", "solutions", "system",
+    "systems", "project", "projects", "company", "operator", "provider", "management", "commercial",
+    "industrial", "general", "large-scale", "facilitie", "facility", "site", "sites", "plant", "plants",
+}
+
 _VERIFICATION_VALUE = {Verification.VERIFIED: 1.0, Verification.PROBABLE: 0.5, Verification.UNVERIFIED: 0.0}
 
 
@@ -71,15 +78,19 @@ def geo_fit(country: str | None, target_region: str, markets: list[Market]) -> t
 
 
 def industry_fit(industry: str | None, activity: str | None, product: ProductProfile) -> tuple[float | None, str]:
+    """Match the customer's industry label (activity only as fallback) against the product's target industries.
+
+    Only the short label is used when present: long activity texts mention many sectors and create false matches.
+    """
     if not industry and not activity:
         return None, "Industry unknown – no industry credit"
     targets = [c.text for c in product.industries] + [c.text for c in product.applications]
     if not targets:
         return None, "Product target industries were not extracted"
-    cust = tokens(f"{industry or ''} {activity or ''}")
+    cust = tokens(industry or activity or "") - _GENERIC_INDUSTRY_TOKENS
     best, best_t = 0.0, ""
     for t in targets:
-        tt = tokens(t)
+        tt = tokens(t) - _GENERIC_INDUSTRY_TOKENS
         if not tt:
             continue
         score = len(cust & tt) / min(len(tt), 4)
@@ -90,13 +101,44 @@ def industry_fit(industry: str | None, activity: str | None, product: ProductPro
     return round(best, 3), f"Matches product target '{best_t}'"
 
 
-def need_evidence(company: Company) -> tuple[float | None, str]:
+def product_terms(product: ProductProfile) -> set[str]:
+    """Words that tie a piece of evidence to the product (name, buyer keywords, applications)."""
+    text = " ".join([product.name, *product.keywords, *(c.text for c in product.applications)])
+    return tokens(text) - _GENERIC_INDUSTRY_TOKENS
+
+
+# Product-agnostic buying triggers: an expansion in a target industry signals need even if the product isn't named.
+_TRIGGERS = tokens("expansion expand new plant factory facility investment invest construction build project tender "
+                   "award contract procurement purchase upgrade modernisation modernization capacity commission "
+                   "install installation retrofit greenfield")
+
+
+def industry_terms(product: ProductProfile) -> set[str]:
+    return tokens(" ".join(c.text for c in product.industries)) - _GENERIC_INDUSTRY_TOKENS
+
+
+def is_need_signal(text: str, terms: set[str], ind_terms: set[str] = frozenset()) -> bool:
+    """Evidence names the product (terms), or a buying trigger together with a target industry."""
+    t = tokens(text)
+    return bool(t & terms) or bool(t & _TRIGGERS and t & ind_terms)
+
+
+def need_evidence(company: Company, product: ProductProfile | None = None) -> tuple[float | None, str]:
+    """verified = 1, probable = 0.5, unverified = 0 – only for evidence of a need for the product: it names the
+    product, or reports a buying trigger (new plant, expansion, contract…) in a target industry.
+    "Listed among manufacturing startups" is about the company, but not about a need.
+    """
     if not company.evidence:
         return None, "No evidence of need found – no credit"
-    pts = sum(_VERIFICATION_VALUE[e.status] for e in company.evidence)
-    counts = {s.value: sum(e.status == s for e in company.evidence) for s in Verification}
-    summary = ", ".join(f"{n} {k}" for k, n in counts.items() if n)
-    return round(min(1.0, pts / 2.0), 3), f"{len(company.evidence)} evidence item(s): {summary}"
+    terms = product_terms(product) if product else set()
+    ind = industry_terms(product) if product else set()
+    relevant = [e for e in company.evidence if not terms or is_need_signal(e.text, terms, ind)]
+    pts = sum(_VERIFICATION_VALUE[e.status] for e in relevant)
+    counts = {s.value: sum(e.status == s for e in relevant) for s in Verification}
+    summary = ", ".join(f"{n} {k}" for k, n in counts.items() if n) or "none"
+    ignored = len(company.evidence) - len(relevant)
+    note = f"; {ignored} item(s) ignored – not about a need for the product" if ignored else ""
+    return round(min(1.0, pts / 2.0), 3), f"{len(relevant)} product-related evidence item(s): {summary}{note}"
 
 
 def source_reliability(company: Company) -> tuple[float, str]:
@@ -107,15 +149,17 @@ def source_reliability(company: Company) -> tuple[float, str]:
 def build_features(customers: list[Company], product: ProductProfile, target_region: str,
                    markets: list[Market]) -> list[CustomerFeatures]:
     out = []
+    terms, ind_terms = product_terms(product), industry_terms(product)
     for i, c in enumerate(customers):
         ind, ind_r = industry_fit(c.industry, c.activity, product)
         geo, geo_r = geo_fit(c.country, target_region, markets)
-        need, need_r = need_evidence(c)
+        need, need_r = need_evidence(c, product)
         rel, rel_r = source_reliability(c)
         out.append(CustomerFeatures(
             id=f"C{i + 1}", name=c.name,
             industry_fit=ind, geo_fit=geo, need_evidence=need, source_reliability=rel,
-            evidence_count=sum(e.status != Verification.UNVERIFIED for e in c.evidence),
+            evidence_count=sum(e.status != Verification.UNVERIFIED and is_need_signal(e.text, terms, ind_terms)
+                               for e in c.evidence),
             reasons={"industry_fit": ind_r, "geo_fit": geo_r, "need_evidence": need_r, "source_reliability": rel_r},
         ))
     return out

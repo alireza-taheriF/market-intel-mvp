@@ -79,6 +79,7 @@ def _company(item: dict, role: str) -> Company | None:
         reason=Claim(reason_text, src) if reason_text else None,
         evidence=_claims(_list(item, "need_evidence")),
         source_ids=src,
+        unverified_fields=[f for f in _list(item, "from_general_knowledge") if f in ("country", "website")],
     )
 
 

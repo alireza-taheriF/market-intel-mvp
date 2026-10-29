@@ -26,6 +26,20 @@ INDEPENDENT_DOMAINS = {
     "mordorintelligence.com", "precedenceresearch.com", "statista.com", "zawya.com",
     "thenationalnews.com", "arabnews.com", "gulfnews.com", "businesswire.com", "prnewswire.com",
     "globenewswire.com", "ess-news.com", "energy-storage.news", "pv-magazine-india.com",
+    # research, academic and consulting publishers
+    "sciencedirect.com", "springer.com", "mdpi.com", "ieee.org", "nature.com", "wiley.com", "researchgate.net",
+    "rolandberger.com", "bcg.com", "bain.com", "accenture.com", "benchmarkminerals.com", "rystadenergy.com",
+    "gminsights.com", "insightaceanalytic.com", "imarcgroup.com", "6wresearch.com", "globaldata.com",
+    # energy and regional business news
+    "enerdata.net", "energyglobal.com", "energy-utilities.com", "energydigital.com", "power-eng.com",
+    "renewableenergymagazine.com", "solarquarter.com", "saurenergy.com", "constructionweekonline.com",
+    "meed.com", "argaam.com", "saudigazette.com.sa", "khaleejtimes.com", "agbi.com", "wam.ae", "spa.gov.sa",
+    "aljazeera.com", "aa.com.tr", "nytimes.com", "washingtonpost.com", "axios.com", "techcrunch.com",
+}
+# Social networks and company-data aggregators: never credible on their own.
+UNRELIABLE_DOMAINS = {
+    "linkedin.com", "facebook.com", "twitter.com", "x.com", "instagram.com", "youtube.com", "reddit.com",
+    "quora.com", "medium.com", "rocketreach.co", "tracxn.com", "leadiq.com", "pitchbook.com", "zoominfo.com",
 }
 _INDEPENDENT_SUFFIXES = (".gov", ".edu", ".int", ".ac.uk", ".gov.uk", ".gov.au", ".gov.sa", ".gov.ae", ".europa.eu")
 
@@ -37,14 +51,25 @@ RELEVANT = 0.5
 WEAK = 0.3
 
 
+def _stem(w: str) -> str:
+    """Tiny plural stemmer: utilities→utility, centers→center, gas stays gas."""
+    if len(w) > 4 and w.endswith("ies"):
+        return w[:-3] + "y"
+    if len(w) > 4 and w.endswith("s") and not w.endswith("ss"):
+        return w[:-1]
+    return w
+
+
 def tokens(text: str) -> set[str]:
     words = re.findall(r"[a-z0-9][a-z0-9\-]+", text.lower())
-    return {w.rstrip("s") if len(w) > 4 else w for w in words if w not in _STOPWORDS and len(w) > 2}
+    return {_stem(w) for w in words if w not in _STOPWORDS and len(w) > 2}
 
 
 def classify_source(source: Source, official_domains: set[str]) -> SourceType:
     d = source.domain
     if not d:
+        return SourceType.UNKNOWN
+    if any(d == u or d.endswith("." + u) for u in UNRELIABLE_DOMAINS):
         return SourceType.UNKNOWN
     if any(d == od or d.endswith("." + od) for od in official_domains):
         return SourceType.OFFICIAL

@@ -45,6 +45,8 @@ Main customer industries: {', '.join(industries) or 'unknown'}
 
 Suggest at least 2 (max 4) geographic markets (countries, or the target region's countries) to sell this product,
 justified ONLY by the sources (demand, policy, growth, projects). If a target region is given, prefer countries in it.
+Always return at least 2 markets: if the target is a single country, add the best-supported neighbouring or similar
+country from the sources as the second market.
 
 SOURCES:
 {format_sources(sources)}
@@ -64,7 +66,12 @@ SOURCES:
 {format_sources(sources)}
 
 Return JSON:
+For "country" (headquarters) and "website": use the sources. If the sources are silent, fill them from general
+knowledge for any well-known company (e.g. Atlas Copco → Sweden) and list those fields in "from_general_knowledge";
+use null only if you genuinely do not know.
+
 {{"competitors": [{{"name": str, "country": str|null (headquarters), "website": str|null,
+   "from_general_knowledge": ["country"|"website", ...],
    "activity": str (what they sell / field of activity), "reason": str (why it competes with this product),
    "sources": ["S..."]}}]}}"""
 
@@ -76,10 +83,20 @@ Product customer industries: {', '.join(industries) or 'unknown'}
 Suggested markets: {', '.join(markets_) or 'unknown'}
 Known competitors (exclude them): {', '.join(competitor_names) or 'none'}
 
-Identify at least 6 (max 12) REAL companies that are potential BUYERS of this product (end users, developers,
-EPCs, utilities, industrial operators...), preferably in the suggested markets, that appear in the sources.
-For each, list concrete evidence of need from the sources (projects, tenders, expansion, energy problems, targets).
-Use null for anything the sources do not support. Do not include product manufacturers/competitors.
+Identify at least 6 (max 12) REAL companies or organisations that appear in the sources and are potential BUYERS of
+this product (end users, plant operators, project owners, contractors/integrators who procure it), preferably in the
+suggested markets. Do not include manufacturers or sellers of this kind of product.
+
+Include a company only if the sources show a concrete buying signal concerning THAT company, either:
+  (a) a project, tender, contract, purchase or use of this kind of product, or
+  (b) a new plant, facility, expansion, upgrade or modernisation in one of the customer industries where this
+      kind of product is typically needed.
+Appearing in a generic list of companies of a sector or country is NOT a buying signal.
+Each need_evidence item must state that signal for that specific company, as found in the source.
+
+"name": the company name as written in the source. "industry": a short label of what the company is (e.g. "Dairy
+producer", "Electric utility"). "country": where the relevant plant/project is. Use null for anything the sources do
+not support.
 
 SOURCES:
 {format_sources(sources)}

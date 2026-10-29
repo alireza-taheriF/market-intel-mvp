@@ -101,6 +101,9 @@ class PageFetcher:
         ctype = resp.headers.get("Content-Type", "")
         if "html" not in ctype and "text" not in ctype:
             return FetchResult(url, ok=True, status=resp.status_code, error=f"Non-HTML content ({ctype or 'unknown'})")
+        if "charset" not in ctype.lower():
+            # No charset header: requests falls back to ISO-8859-1 and garbles UTF-8 ("â" for "–").
+            resp.encoding = resp.apparent_encoding or "utf-8"
         try:
             title, text = html_to_text(resp.text)
         except Exception as exc:  # malformed HTML should not crash collection

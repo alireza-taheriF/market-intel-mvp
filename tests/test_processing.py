@@ -58,3 +58,47 @@ def test_unreachable_source_is_not_strong_evidence():
     s.snippet, s.source_type = "ACWA Power battery storage project Saudi Arabia", SourceType.INDEPENDENT
     claim = verify_claim(Claim("ACWA Power battery storage project Saudi Arabia", ["S1"]), {"S1": s})
     assert claim.status == Verification.PROBABLE
+
+
+def test_official_website_is_picked_only_on_domain_name_match():
+    from market_intel.processing.cleaning import pick_official_website
+    urls = ["https://www.linkedin.com/company/acwa-power", "https://www.zawya.com/acwa", "https://www.acwapower.com/en/"]
+    assert pick_official_website("ACWA Power", urls) == "https://www.acwapower.com"
+    assert pick_official_website("BYD", ["https://www.bydglobal.com/x"]) == "https://www.bydglobal.com"
+    assert pick_official_website("Khazna Data Centers", ["https://khazna.ae/about"]) == "https://khazna.ae"
+    # no match -> unknown, never a guess
+    assert pick_official_website("Saudi Power Procurement Company", ["https://www.spa.gov.sa/n1"]) is None
+    assert pick_official_website("Saudi Energy", ["https://www.saudienergy.example"]) is None  # only generic words
+
+
+def test_ambiguous_initials_never_produce_a_website():
+    from market_intel.processing.cleaning import pick_official_website
+    assert pick_official_website("Saudi Energy", ["https://www.se.com.sa/en"]) is None
+    assert pick_official_website("Alfanar Projects", ["https://alfanarprojects.com/en"]) == "https://alfanarprojects.com"
+    # sub-site → company homepage
+    assert pick_official_website("Kuehne Nagel", ["https://jobs.kuehne-nagel.com/x"]) == "https://www.kuehne-nagel.com"
+
+
+def test_plural_stemming_matches_singular():
+    from market_intel.processing.validation import tokens
+    assert tokens("Utilities") == tokens("Utility") and tokens("Data centers") == tokens("data center")
+
+
+def test_product_name_from_link_only_input():
+    from market_intel.processing.cleaning import product_name_from_page
+    url = "https://www.siemens.com/global/en/products/automation/plc/s7-1500.html"
+    assert product_name_from_page("SIMATIC S7-1500 PLC – High-Performance Controller | Siemens", url) == "SIMATIC S7-1500 PLC"
+    assert product_name_from_page("", "https://x.com/products/cr-vertical-multistage-pumps/") == "cr vertical multistage pumps"
+    assert product_name_from_page("Home | Acme", "https://acme.com/") is None
+
+
+def test_websites_that_only_contain_the_name_are_rejected():
+    from market_intel.processing.cleaning import pick_official_website as pick
+    assert pick("USI", ["https://www.usi.edu"]) is None                                    # a university
+    assert pick("Ashland", ["https://www.ashlandmass.com"]) is None                        # a town
+    assert pick("PETRONAS", ["https://www.pli-petronas.com"]) is None                      # another company
+    assert pick("Emirates Global Aluminium", ["https://aluminium-stewardship.org"]) is None  # an association
+    assert pick("VinFast", ["https://vinfastauto.com/vn"]) == "https://vinfastauto.com"
+    assert pick("ACWA Power", ["https://www.acwapower.com"]) == "https://www.acwapower.com"
+    assert pick("Al Sharif Contracting", ["https://www.alsharifgroup.com"]) == "https://www.alsharifgroup.com"
+    assert pick("Trung Nguyen Legend", ["https://trungnguyenlegend.us"]) == "https://trungnguyenlegend.us"

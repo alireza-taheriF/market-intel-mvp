@@ -30,7 +30,14 @@ from market_intel.core.errors import (
 from market_intel.core.faults import SCENARIOS, FaultConfig
 from market_intel.core.models import AnalysisResult, Company, ProductInput, Source, StepLog
 from market_intel.messaging.sales import generate_messages
-from market_intel.processing.cleaning import dedupe_companies, domain_of, remove_overlap
+from market_intel.processing.cleaning import (
+    NOT_COMPANY_SITES,
+    dedupe_companies,
+    domain_of,
+    pick_official_website,
+    product_name_from_page,
+    remove_overlap,
+)
 from market_intel.processing.sources import SourceRegistry
 from market_intel.processing.validation import (
     classify_source,
@@ -76,6 +83,7 @@ class Pipeline:
         self.fetcher = fetcher or PageFetcher(settings, self.faults)
         self.llm = llm or LLMClient(settings, self.faults)
         self.progress = progress or (lambda step, result: None)
+        self.derived_name: str | None = None  # product name taken from the product page (link-only input)
         self.ai_down: str | None = None      # reason, once the AI model failed hard
         self.search_down: str | None = None  # reason, once web search failed hard
 
@@ -159,12 +167,15 @@ class Pipeline:
                 notes.append(f"web search failed: {exc.user_message}")
 
         step_sources: list[Source] = [self.registry.add_url(u, query="(user-provided URL)") for u in extra_urls or []]
-        for h in hits:
+        # Round-robin over queries so every query contributes before the cap, and register only the
+        # sources actually used: each of them is fetched, so no cited link stays "not checked".
+        for h in _round_robin(hits):
+            if len(step_sources) >= self.settings.max_pages_per_step:
+                break
             src = self.registry.add_hit(h)
             if src not in step_sources:
                 step_sources.append(src)
-
-        to_fetch = [s for s in step_sources if s.accessible is None][: self.settings.max_pages_per_step]
+        to_fetch = [s for s in step_sources if s.accessible is None]
         results = self.fetcher.fetch_many([s.url for s in to_fetch])
         for s in to_fetch:
             self.registry.apply_fetch(s, results[s.url])
@@ -178,12 +189,12 @@ class Pipeline:
         unreachable = sum(1 for s in to_fetch if not s.accessible)
         if unreachable:
             notes.append(f"{unreachable}/{len(to_fetch)} pages not accessible (snippet used)")
-        return usable[:24], notes
+        return usable, notes
 
     def _label(self) -> str:
         """Product name for search queries, without parenthetical parts like '(BESS)'."""
         p = self.result.product
-        name = (p.name if p else "") or self.result.input.label
+        name = (p.name if p else "") or self.derived_name or self.result.input.label
         return re.sub(r"\s*\([^)]*\)", "", name).strip() or name
 
     def _keyword(self) -> str:
@@ -196,7 +207,15 @@ class Pipeline:
     # --- steps -------------------------------------------------------------------
 
     def _step_product(self) -> str | None:
-        inp, label = self.result.input, self._label()
+        inp = self.result.input
+        if inp.url and not inp.name:
+            # Link-only input: searching for the raw URL is useless, so name the product from its page first.
+            page = self.fetcher.fetch(inp.url)
+            self.derived_name = product_name_from_page(page.title, inp.url)
+            if not self.derived_name and not inp.description:
+                raise InvalidResponseError("could not identify the product from the link (page unreadable, "
+                                           "no usable title) – please add the product name", service="Product page")
+        label = self._label()
         queries = [f"{label} features specifications", f"{label} applications industries use cases"]
         if inp.description and inp.name:
             queries.append(f"{inp.name} {inp.description[:80]}")
@@ -221,6 +240,11 @@ class Pipeline:
         self._require_ai()
         industries = [c.text for c in self.result.product.industries] if self.result.product else []
         markets = parse_markets(self.llm.complete_json(prompts.markets(self.result.input, industries, sources)))
+        if len(markets) < MIN_MARKETS:  # one retry, the prompt asks for at least 2
+            retry = parse_markets(self.llm.complete_json(
+                prompts.markets(self.result.input, industries, sources)
+                + f"\n\nYour previous answer had only {len(markets)} market(s). Return at least {MIN_MARKETS}."))
+            markets = retry if len(retry) > len(markets) else markets
         self.result.markets = markets[:4]
         if len(markets) < MIN_MARKETS:
             notes.append(f"only {len(markets)} market(s) found (minimum {MIN_MARKETS})")
@@ -252,15 +276,26 @@ class Pipeline:
         product = self.result.product
         industries = [c.text for c in product.industries][:3] if product else []
         markets = [m.name for m in self.result.markets][:2] or ([self._region()] if self._region() else [])
-        queries = [f"{ind} company {mk} {kw}" for mk in markets for ind in industries[:2]]
-        queries += [f"{kw} project {mk} awarded" for mk in markets] or [f"{kw} project awarded customer"]
+        # Two product-agnostic kinds of buying signal: (a) projects/contracts for the product itself,
+        # (b) new plants and expansions in the industries that use it.
+        mks = markets or [""]
+        queries = [f"{kw} project contract {mk}".strip() for mk in mks[:2]]
+        queries += [f"new {ind} plant expansion {mks[0]}".strip() for ind in industries]
+        queries += [f"{kw} supplier selected customer {mks[0]}".strip()]
         if not industries:
             queries.append(f"{kw} customers case study")
-        sources, notes = self._collect(queries[:7])
-        self._require_ai()
-        prompt = prompts.customers(self.result.input, [c.text for c in product.industries] if product else [],
-                                   markets, [c.name for c in self.result.competitors], sources)
-        found = parse_companies(self.llm.complete_json(prompt), "customers", "customer")
+        found, notes = self._customer_round(queries[:7], markets)
+        if len(found) < MIN_CUSTOMERS and product:
+            # Second round with the remaining industries/applications before giving up.
+            extra = [c.text for c in product.industries[2:5] + product.applications[:2]]
+            more_q = [f"{x} {mk} investment new facility".strip() for mk in markets[:1] or [""] for x in extra] \
+                or [f"{kw} buyers"]
+            try:
+                more, more_notes = self._customer_round(more_q[:5], markets)
+                found += more
+                notes += more_notes + [f"second search round added {len(more)} candidate(s)"]
+            except ExternalServiceError as exc:
+                notes.append(f"second search round failed: {exc.user_message}")
         found, merged = dedupe_companies(found)
         found, overlap = remove_overlap(found, self.result.competitors)
         self.result.duplicates_removed += merged + overlap
@@ -270,8 +305,43 @@ class Pipeline:
             notes.append(f"only {len(found)} customer(s) found (minimum {MIN_CUSTOMERS})")
         return "; ".join(notes) or None
 
+    def _find_missing_websites(self, companies: list[Company]) -> None:
+        """For companies without a cited website, search '<name> official website' and accept a
+        result only if its domain matches the company name (deterministic rule, no LLM)."""
+        for c in companies:
+            if c.website and "website" in c.unverified_fields:
+                # From model knowledge: keep only if the domain matches the name (reachability is checked next).
+                if pick_official_website(c.name, [c.website]):
+                    c.website_origin = "knowledge (domain matches name)"
+                    c.unverified_fields.remove("website")
+                    continue
+                c.website = None
+            if c.website:
+                c.website_origin = c.website_origin or "source"
+                continue
+            if self.search_down:
+                return
+            try:
+                hits = self.search.search(f"{c.name} official website", 8, exclude_domains=list(NOT_COMPANY_SITES))
+            except ExternalServiceError as exc:
+                self._note_outage(exc)
+                log.warning("website lookup for %s failed: %s", c.name, exc)
+                continue
+            if url := pick_official_website(c.name, [h.url for h in hits]):
+                c.website, c.website_origin = url, "search"
+                if "website" in c.missing_fields:
+                    c.missing_fields.remove("website")
+
+    def _customer_round(self, queries: list[str], markets: list[str]) -> tuple[list[Company], list[str]]:
+        sources, notes = self._collect(queries)
+        product = self.result.product
+        prompt = prompts.customers(self.result.input, [c.text for c in product.industries] if product else [],
+                                   markets, [c.name for c in self.result.competitors], sources)
+        return parse_companies(self.llm.complete_json(prompt), "customers", "customer"), notes
+
     def _check_websites(self, companies: list[Company]) -> None:
         """Reachability check of each company website; the homepage is logged as an official source."""
+        self._find_missing_websites(companies)
         urls = [c.website for c in companies if c.website]
         results = self.fetcher.fetch_many(urls)
         for c in companies:
@@ -344,6 +414,18 @@ class Pipeline:
             r.warnings.append("Incomplete analysis: " + ", ".join(shortfalls))
         bad_steps = any(s.status in ("failed", "skipped") for s in r.steps)
         return "partial" if shortfalls or bad_steps else "complete"
+
+
+def _round_robin(hits: list[SearchHit]) -> list[SearchHit]:
+    """Interleave hits by query: q1#1, q2#1, ..., q1#2, q2#2, ..."""
+    by_query: dict[str, list[SearchHit]] = {}
+    for h in hits:
+        by_query.setdefault(h.query, []).append(h)
+    out, i = [], 0
+    while any(i < len(v) for v in by_query.values()):
+        out += [v[i] for v in by_query.values() if i < len(v)]
+        i += 1
+    return out
 
 
 def rank(result: AnalysisResult, weights: dict[str, float]) -> list[ScoredCustomer]:

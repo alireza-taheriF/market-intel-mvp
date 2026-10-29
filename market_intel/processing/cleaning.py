@@ -127,3 +127,121 @@ def remove_overlap(customers: list[Company], competitors: list[Company]) -> tupl
         else:
             kept.append(c)
     return kept, log
+
+
+# Words that don't identify a company, so they can't be used to match its domain.
+_GENERIC_NAME_TOKENS = {
+    "the", "and", "for", "company", "companies", "group", "international", "industries", "industry",
+    "holding", "holdings", "corporation", "global", "national", "middle", "east", "saudi", "arabia",
+    "arabian", "emirates", "united", "contracting", "commercial", "development", "projects", "services",
+    "solutions", "systems", "technology", "technologies", "energy", "power", "data", "centers", "centres",
+}
+
+# Aggregators, social networks and news sites are never a company's own website.
+NOT_COMPANY_SITES = (
+    "linkedin.com", "facebook.com", "twitter.com", "x.com", "instagram.com", "youtube.com", "wikipedia.org",
+    "crunchbase.com", "bloomberg.com", "zoominfo.com", "rocketreach.co", "tracxn.com", "pitchbook.com",
+    "leadiq.com", "dnb.com", "glassdoor.com", "indeed.com", "yahoo.com", "google.com", "zawya.com",
+    "reuters.com", "argaam.com", "wikipedia.com", "craft.co", "cbinsights.com", "owler.com", "globaldata.com",
+    "saudipedia.com", "investriyadh.ai", "energynews.pro", "apollo.io", "signalhire.com", "theorg.com",
+)
+
+
+def name_tokens(name: str) -> list[str]:
+    """Distinctive tokens of a company name, acronyms like '(EWEC)', and initials ('Saudi Electricity' → 'se')."""
+    acronyms = [a.lower() for a in re.findall(r"\b([A-Z]{2,6})\b", name)]
+    words = [t for t in re.split(r"[^a-z0-9]+", normalize_company_name(re.sub(r"\([^)]*\)", " ", name))) if t]
+    distinctive = [t for t in words if len(t) >= 4 and t not in _GENERIC_NAME_TOKENS]
+    initials = "".join(w[0] for w in words if w not in ("the", "and", "of")) if len(words) >= 2 else ""
+    # 2-letter initials are ambiguous ("Saudi Energy" vs "Saudi Electricity" → se.com.sa): need 3+.
+    return list(dict.fromkeys(acronyms + distinctive + ([initials] if 3 <= len(initials) <= 5 else [])))
+
+
+# Endings a company domain may add to its brand: acwa+power, vinfast+auto, alsharif+group.
+_DOMAIN_SUFFIXES = {"group", "global", "corp", "inc", "co", "energy", "power", "auto", "tech", "intl", "world",
+                    "online", "official", "usa", "us", "uk", "plc", "ltd", "company", "the", "hq", "inc"}
+
+
+def _label_matches(label: str, tokens: list[str], all_words: set[str]) -> bool:
+    """The domain label must be built only from words of the name plus usual company endings, and contain at least
+    one distinctive token: 'alsharifgroup' = al+sharif+group ✓, but 'ashlandmass' (a town) and
+    'aluminiumstewardship' (an association) leave unexplained letters ✗."""
+    vocab = sorted((all_words | _DOMAIN_SUFFIXES | set(tokens)) - {""}, key=len, reverse=True)
+
+    def parse(rest: str, seen_token: bool) -> bool:  # small backtracking split; labels are short
+        if not rest:
+            return seen_token
+        return any(parse(rest[len(w):], seen_token or w in tokens) for w in vocab if rest.startswith(w))
+
+    return parse(label, False)
+
+
+def _institution_mismatch(name: str, domain: str) -> bool:
+    """A company is not a university (.edu) or a government body (.gov…), unless its name says so."""
+    n = name.lower()
+    if re.search(r"\.edu(\.|$)", domain) and not re.search(r"universit|college|school|institut", n):
+        return True
+    if re.search(r"\.gov(\.|$)", domain) and not re.search(r"ministry|government|authority|department|agency|"
+                                                          r"city|municipal|state|office|procurement", n):
+        return True
+    return False
+
+
+_SUFFIX_PARTS = {"com", "net", "org", "gov", "co", "ac", "edu", "biz", "info"}
+
+
+def _registrable(domain: str) -> tuple[str, str]:
+    """('jobs.se.com.sa') → ('se', 'se.com.sa'): main label and registrable domain."""
+    parts = domain.split(".")
+    i = len(parts) - 1
+    while i > 0 and (parts[i] in _SUFFIX_PARTS or len(parts[i]) == 2):
+        i -= 1
+    return parts[i], ".".join(parts[i:])
+
+
+def pick_official_website(name: str, candidate_urls: list[str]) -> str | None:
+    """First search result whose domain matches the company name, as its homepage URL.
+
+    Rules: a short acronym must equal or start the domain's main label (stc.com.sa, bydglobal.com);
+    a word of 4+ letters must be contained in it (khazna.ae, acwapower.com). Aggregators/social/news sites are skipped.
+    """
+    tokens = name_tokens(name)
+    if not tokens:
+        return None
+    all_words = set(re.split(r"[^a-z0-9]+", normalize_company_name(name))) - {""}
+    for url in candidate_urls:
+        domain = domain_of(url)
+        if not domain or any(domain == s or domain.endswith("." + s) for s in NOT_COMPANY_SITES):
+            continue
+        label, registrable = _registrable(domain)
+        label = label.replace("-", "")
+        if _institution_mismatch(name, domain):
+            continue
+        if _label_matches(label, tokens, all_words):
+            netloc = urlparse(url).netloc.lower()
+            # Homepage of the company, not a sub-site such as jobs.se.com.sa.
+            return f"https://{netloc}" if netloc in (registrable, "www." + registrable) else f"https://www.{registrable}"
+    return None
+
+
+_TITLE_NOISE = {"home", "products", "product", "shop", "official site", "official website", "buy online"}
+
+
+def product_name_from_page(title: str, url: str) -> str | None:
+    """Best product name for a link-only input: the page title's most specific part, else the URL slug.
+
+    'SIMATIC S7-1500 PLC – High-Performance Controller | Siemens' → 'SIMATIC S7-1500 PLC'
+    '.../products/cr-vertical-multistage-pumps' → 'cr vertical multistage pumps'
+    """
+    brand = (domain_of(url) or "").split(".")[0]
+    parts = [p.strip() for p in re.split(r"\s[|–—:·]\s", title or "") if p.strip()]
+    # Drop the site/brand segment ("| Siemens") and navigation words; the first remaining part names the product.
+    parts = [p for p in parts if p.lower() not in _TITLE_NOISE and p.lower().replace(" ", "") != brand and len(p) >= 3]
+    if parts:
+        return parts[0][:120]
+    path = [s for s in urlparse(url).path.split("/") if s and not s.isdigit()]
+    for seg in reversed(path):
+        words = re.sub(r"\.(html?|php|aspx?)$", "", seg).replace("-", " ").replace("_", " ").strip()
+        if len(words) >= 4 and words.lower() not in _TITLE_NOISE:
+            return words[:120]
+    return None

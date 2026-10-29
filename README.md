@@ -135,6 +135,8 @@ de-duplication and the final status are all deterministic code.
 | Decision | Why |
 |---|---|
 | **AI extracts, code decides.** | Ranking and verification must be testable and reproducible; LLM output varies between runs. |
+| **Websites checked, not trusted.** | A website comes from a cited source, from the model's knowledge, or from a `"<name> official website"` search. A website from the model's knowledge or from search is accepted only if its domain matches the company name (`acwapower.com` ↔ ACWA Power), and every website is then fetched to check reachability. Social, aggregator and news domains are never accepted. |
+| **Fields from general knowledge are flagged.** | A competitor's headquarters country may come from the model's knowledge when the sources are silent; the UI and the report then mark it *⚠️ general knowledge, not in sources*. |
 | **Numbered sources + mandatory citations.** | Every claim can be traced to a URL. Invented source ids are detected and discarded. |
 | **Claim verification by lexical relevance**, not by asking the LLM "is this true?". | Asking the same model to grade itself is circular. The code checks that the cited page is reachable, has a credible type, and actually contains the claim's content words; for claims about a company, the company's name must appear. |
 | **Three-level status** (verified / probable / unverified). | Separates confirmed facts from likely or unsupported ones, as the brief requires. |
@@ -157,9 +159,9 @@ coverage    = Σ wᵢ over known criteria / Σ wᵢ
 
 | Criterion | How the value is computed (`scoring/features.py`) | Unknown when |
 |---|---|---|
-| Industry fit | token overlap between the customer's industry/activity and the product's extracted industries/applications | industry and activity both unknown |
+| Industry fit | token overlap between the customer's short industry label (activity text only as fallback) and the product's extracted industries/applications; generic words such as *infrastructure*, *developer* and *services* are ignored | industry and activity both unknown |
 | Geographic fit | 1.0 = country is a target market or inside the target region · 0.5 = same wider region · 0 = outside | country unknown |
-| Evidence of need | Σ(verified = 1, probable = 0.5, unverified = 0) / 2, capped at 1 | no evidence items |
+| Evidence of need | Σ(verified = 1, probable = 0.5, unverified = 0) / 2, capped at 1, counting **only evidence that relates to the product** (shares words with the product name, buyer keywords or applications). "Listed among manufacturing startups" earns 0. | no evidence items |
 | Data reliability | company record verified = 1 (website reachable **and** named in a cited source), probable = 0.5, unverified = 0 | — |
 
 - **Adjustable weights:** sidebar sliders; they must be ≥ 0 with at least one > 0, and are normalised to sum to 1.

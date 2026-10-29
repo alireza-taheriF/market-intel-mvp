@@ -110,6 +110,8 @@ def send_test_email(settings: Settings, message: SalesMessage, recipient: str, *
                                service="Email (SMTP)")
         if not settings.smtp_configured:
             raise EmailError("SMTP is not configured (set SMTP_HOST and SMTP_FROM in .env)")
+        if settings.smtp_security not in ("starttls", "ssl", "none"):
+            raise EmailError(f"invalid SMTP_SECURITY '{settings.smtp_security}' (use starttls, ssl or none)")
         _deliver(settings, build_email(settings, message, addr))
     except (EmailError, NetworkError, ServiceTimeoutError) as exc:
         return done(False, exc.user_message)

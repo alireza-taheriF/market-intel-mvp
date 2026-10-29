@@ -97,6 +97,8 @@ class Company:
     evidence: list[Claim] = field(default_factory=list)
     source_ids: list[str] = field(default_factory=list)
     website_reachable: bool | None = None
+    unverified_fields: list[str] = field(default_factory=list)  # filled from model knowledge, not from a source
+    website_origin: str | None = None  # "source" (cited by the LLM) | "search" (found by domain match)
     status: Verification = Verification.UNVERIFIED
     missing_fields: list[str] = field(default_factory=list)
     merged_from: list[str] = field(default_factory=list)

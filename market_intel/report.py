@@ -37,8 +37,8 @@ def to_markdown(r: AnalysisResult, ranking: list[ScoredCustomer]) -> str:
     out += [f"### {m.name}\n{m.rationale.text}{_cite(m.rationale)}\n" for m in r.markets] or ["_No markets identified._", ""]
 
     out += ["## 3. Competitors", "", "| Company | Country | Website | Activity | Status |", "|---|---|---|---|---|"]
-    out += [f"| {c.name} | {_v(c.country)} | {_v(c.website)} | {_v(c.activity)} | {_BADGE[c.status.value]} |"
-            for c in r.competitors]
+    out += [f"| {c.name} | {_v(c.country)}{' ⚠️ (general knowledge)' if c.country and 'country' in c.unverified_fields else ''} "
+            f"| {_v(c.website)} | {_v(c.activity)} | {_BADGE[c.status.value]} |" for c in r.competitors]
     out += [""] + [f"- **{c.name}** – {c.reason.text}{_cite(c.reason)}" for c in r.competitors if c.reason] + [""]
 
     by_name = {c.name: c for c in r.customers}

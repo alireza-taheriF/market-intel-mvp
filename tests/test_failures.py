@@ -22,6 +22,9 @@ def settings(tmp_path):
 
 
 class FakeSearch:
+    def search(self, query, max_results=None, exclude_domains=None):  # used for website lookup
+        return []
+
     def __init__(self, fail=None):
         self.fail = fail
 

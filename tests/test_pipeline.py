@@ -13,6 +13,9 @@ PAGE = ("ACWA Power, Saudi Electricity, Masdar, DEWA, NEOM, Aramco and Khazna Da
 
 
 class Search:
+    def search(self, query, max_results=None, exclude_domains=None):  # used for website lookup
+        return []
+
     def search_many(self, queries, max_results=None):
         return [SearchHit(f"Article {i}", f"https://www.reuters.com/{abs(hash(q)) % 9999}-{i}", PAGE, q)
                 for q in queries for i in range(2)], []
@@ -85,3 +88,9 @@ def test_full_run_produces_complete_ranked_validated_result(tmp_path):
     assert [m.company_name for m in r.messages] == [s.name for s in ranking[:2]]
     assert r.product.features[0].status == Verification.VERIFIED
     assert "Sources & validation" in to_markdown(r, ranking)
+
+
+def test_round_robin_gives_every_query_a_place_before_the_cap():
+    from market_intel.pipeline import _round_robin
+    hits = [SearchHit("t", f"https://a/{q}{i}", "", q) for q in ("q1", "q2") for i in range(3)]
+    assert [h.query for h in _round_robin(hits)][:2] == ["q1", "q2"]
