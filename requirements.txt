@@ -1,0 +1,9 @@
+streamlit>=1.40
+anthropic>=0.70
+ddgs>=9.0
+requests>=2.31
+beautifulsoup4>=4.12
+python-dotenv>=1.0
+pandas>=2.2
+pytest>=8.0
+openai>=1.50
